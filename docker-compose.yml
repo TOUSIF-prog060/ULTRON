@@ -1,0 +1,42 @@
+# ═══════════════════════════════════════════════════════════════════
+#  ULTRON local services
+#
+#  IMPORTANT: ULTRON's whole job is to control THIS machine — open apps,
+#  drive the browser, screenshot the screen, close windows. A Docker
+#  container is an isolated Linux sandbox and physically cannot do any of
+#  that to your Windows host. So the ULTRON app itself is NOT dockerised;
+#  run it natively:
+#
+#      npm install && npm run dev
+#
+#  What this compose file DOES give you is the optional offline brain +
+#  offline vision model (Ollama) in a container, so ULTRON keeps working
+#  with zero cloud keys and zero quota limits. Start it with:
+#
+#      docker compose up -d
+#      docker compose exec ollama ollama pull llama3.1      # tool-calling brain
+#      docker compose exec ollama ollama pull llava         # local vision
+#
+#  Then in .env.local:  OLLAMA_BASE_URL=http://localhost:11434
+# ═══════════════════════════════════════════════════════════════════
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ultron-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+    # Uncomment if you have an NVIDIA GPU + nvidia-container-toolkit:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  ollama-models:
