@@ -10,12 +10,24 @@ An Iron Man–inspired holographic orb built with **Next.js**, **Three.js**, **W
 
 ## Getting started
 
+Run this **in a normal Windows PowerShell or CMD window** — not WSL, not
+Docker, not Git Bash. ULTRON opens your apps, drives your browser, and
+screenshots your screen by shelling out to `powershell.exe` on *this*
+machine, so it has to run natively on the host.
+
 ```bash
 npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Then either:
+
+- **Browser UI** — open [http://localhost:3000](http://localhost:3000) (the orb, voice, gestures, camera).
+- **Terminal** — in a *second* window: `npm run cli` (text chat), or `npm run terminal` (Python voice terminal, needs `pip install -r requirements` deps).
+
+The `dev` server is the part with computer access; `cli` / `terminal` are
+just front-ends that talk to it over `http://localhost:3000`. If you see
+*"Can't reach the ULTRON server"*, you forgot to start `npm run dev`.
 
 ### Making ULTRON actually smart
 

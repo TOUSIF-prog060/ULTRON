@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "cli": "node cli.js",
+    "cli": "node cli.mjs",
     "terminal": "python ultron_terminal.py"
   },
   "dependencies": {
