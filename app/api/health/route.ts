@@ -7,16 +7,24 @@ import { getAllFacts, getAllCorrections } from "@/lib/memory/store";
 // the dumb local intent engine.
 export async function GET() {
   const providers = listProviders();
-  const anyConfigured = providers.some((p) => p.configured);
+  // Ollama always self-reports "configured" (it can't know if it's running
+  // without a round trip), so a real cloud brain is what actually matters.
+  const hasCloudBrain = providers.some((p) => p.id !== "ollama" && p.configured);
+  const geminiOnly =
+    hasCloudBrain &&
+    providers.filter((p) => p.id !== "ollama" && p.configured).every((p) => p.id === "gemini");
+  const anyConfigured = hasCloudBrain;
 
   return NextResponse.json({
     ok: true,
     brain: {
       providers,
       anyConfigured,
-      note: anyConfigured
-        ? undefined
-        : "No AI brain configured — running on the limited local intent engine. Add ANTHROPIC_API_KEY or OPENAI_API_KEY to .env.local.",
+      note: !anyConfigured
+        ? "No AI brain configured — running on the limited local intent engine. Add ANTHROPIC_API_KEY or OPENAI_API_KEY to .env.local."
+        : geminiOnly
+        ? "Only the Gemini free tier is configured (~20 requests/day, shared with vision). It exhausts fast and then ULTRON drops to the dumb local engine. Add ANTHROPIC_API_KEY or OPENAI_API_KEY."
+        : undefined,
     },
     vision: {
       gemini: !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
