@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "cli": "node cli.mjs",
-    "terminal": "python ultron_terminal.py"
+    "terminal": "python ultron_terminal.py",
+    "doctor": "node scripts/doctor.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.19.0",
