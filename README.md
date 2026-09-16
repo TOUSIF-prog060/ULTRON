@@ -2,9 +2,7 @@
 
 An Iron Man–inspired holographic orb built with **Next.js**, **Three.js**, **Web Speech API**, and **MediaPipe** hand tracking — control it with your voice and bare hands through your webcam & microphone.
 
-> 🔮 This is the open-source **interface** of [ULTRON](https://sagartamang.com/projects/ultron) — my AI that talks in real time and controls Android devices by itself. **[Read the write-up](https://sagartamang.com/projects/ultron)** or **[the X post](https://x.com/sagar_builds/status/2077277583646101921)**
-
-> 📱 **[Watch the demo on Instagram](https://www.instagram.com/p/DayJ17OTwvx/)**
+> 🔮 This is the open-source **interface** of [ULTRON](https://sagartamang.com/projects/ultron) — my AI that talks in real time and controls Android devices by itself. **[Read the write-up](https://sagartamang.com/projects/ultron)** or **[the X post](https://x.com/sagar_builds/status/2077277583646101921)*
 
 ![ULTRON orb UI](docs/screenshot.png)
 
