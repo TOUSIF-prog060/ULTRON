@@ -337,6 +337,50 @@ export const ASSISTANT_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: "type_text",
+    description: "Type text or write content into the currently active window or a target application (e.g. Notepad, Word, browser search bar, chat, Discord, code editor).",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        text: {
+          type: "STRING",
+          description: "The exact text string to type.",
+        },
+        target_app: {
+          type: "STRING",
+          description: "Optional name of the application or window to focus before typing (e.g. 'notepad', 'word', 'chrome', 'code').",
+        },
+        press_enter: {
+          type: "BOOLEAN",
+          description: "Whether to press the Enter key after typing (default: false).",
+        },
+      },
+      required: ["text"],
+    },
+  },
+  {
+    name: "press_key",
+    description: "Press a keyboard shortcut or special key (e.g. 'enter', 'tab', 'escape', 'backspace', 'space', 'ctrl+s', 'ctrl+c', 'ctrl+v', 'ctrl+a', 'alt+f4') in the active window or target application.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        key: {
+          type: "STRING",
+          description: "The key name or key combination to press (e.g. 'enter', 'tab', 'escape', 'backspace', 'ctrl+s', 'ctrl+c', 'ctrl+v', 'ctrl+a', 'ctrl+z', 'alt+f4', 'up', 'down').",
+        },
+        target_app: {
+          type: "STRING",
+          description: "Optional name of the application or window to focus before pressing the key.",
+        },
+        repeat: {
+          type: "NUMBER",
+          description: "Number of times to press the key (default: 1).",
+        },
+      },
+      required: ["key"],
+    },
+  },
+  {
     name: "control_orb_interface",
     description: "Control the 3D holographic orb visual theme, emotion state, and animation.",
     parameters: {
@@ -362,3 +406,4 @@ export const ASSISTANT_TOOLS: ToolDefinition[] = [
     },
   },
 ];
+

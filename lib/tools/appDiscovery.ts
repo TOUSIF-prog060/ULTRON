@@ -5,7 +5,8 @@ import { isProcessAllowed } from "./safety";
 
 export interface DiscoveredApp {
   name: string;
-  appId: string;
+  appId?: string;
+  targetPath?: string;
 }
 
 export interface RunningProcessInfo {
@@ -44,18 +45,18 @@ export function getMostRecentOpenedItem(): SessionOpenedItem | undefined {
 }
 
 /**
- * Discovers all installed Windows Start Menu & Store Apps using PowerShell Get-StartApps
+ * Discovers all installed Windows Start Menu, Desktop shortcuts, User Programs, Store Apps, and Registry App Paths
  */
 export async function discoverInstalledApps(): Promise<DiscoveredApp[]> {
   return new Promise((resolve) => {
     if (process.platform !== "win32") return resolve([]);
 
-    // Check cached catalog if recently created
+    // Check cached catalog if recently created (within 2 hours)
     if (fs.existsSync(APP_CATALOG_PATH)) {
       try {
         const stat = fs.statSync(APP_CATALOG_PATH);
         const ageHours = (Date.now() - stat.mtimeMs) / (1000 * 60 * 60);
-        if (ageHours < 24) {
+        if (ageHours < 2) {
           const cached = JSON.parse(fs.readFileSync(APP_CATALOG_PATH, "utf-8"));
           if (Array.isArray(cached) && cached.length > 0) {
             return resolve(cached);
@@ -64,22 +65,74 @@ export async function discoverInstalledApps(): Promise<DiscoveredApp[]> {
       } catch {}
     }
 
-    const psCmd = `powershell -NoProfile -Command "Get-StartApps | ConvertTo-Json -Compress"`;
-    exec(psCmd, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
+    const psScript = `
+$result = [System.Collections.Generic.List[PSObject]]::new()
+$seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+# 1. StartApps (UWP / Modern Windows Apps)
+Get-StartApps -ErrorAction SilentlyContinue | ForEach-Object {
+    if ($_.Name -and -not $seen.Contains($_.Name)) {
+        [void]$seen.Add($_.Name)
+        $result.Add([PSCustomObject]@{ name = $_.Name; appId = $_.AppID; targetPath = '' })
+    }
+}
+
+# 2. Start Menu Shortcuts (.lnk), Desktop shortcuts, and User Programs
+$dirs = @(
+    [System.IO.Path]::Combine($env:ProgramData, 'Microsoft\\Windows\\Start Menu\\Programs'),
+    [System.IO.Path]::Combine($env:APPDATA, 'Microsoft\\Windows\\Start Menu\\Programs'),
+    [System.IO.Path]::Combine($env:USERPROFILE, 'Desktop'),
+    [System.IO.Path]::Combine($env:PUBLIC, 'Desktop'),
+    [System.IO.Path]::Combine($env:LOCALAPPDATA, 'Programs')
+)
+
+foreach ($d in $dirs) {
+    if (Test-Path $d) {
+        Get-ChildItem -Path $d -Recurse -Include '*.lnk','*.exe' -ErrorAction SilentlyContinue | ForEach-Object {
+            $base = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
+            if ($base -and -not $seen.Contains($base) -and -not $base.ToLower().StartsWith('uninstall') -and -not $base.ToLower().Contains('helper') -and -not $base.ToLower().Contains('update')) {
+                [void]$seen.Add($base)
+                $result.Add([PSCustomObject]@{ name = $base; appId = ''; targetPath = $_.FullName })
+            }
+        }
+    }
+}
+
+# 3. Registry App Paths
+$reg = @('HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths', 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths')
+foreach ($r in $reg) {
+    if (Test-Path $r) {
+        Get-ChildItem -Path $r -ErrorAction SilentlyContinue | ForEach-Object {
+            $base = [System.IO.Path]::GetFileNameWithoutExtension($_.PSChildName)
+            $val = (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).'(default)'
+            if ($base -and $val -and -not $seen.Contains($base)) {
+                [void]$seen.Add($base)
+                $result.Add([PSCustomObject]@{ name = $base; appId = ''; targetPath = $val })
+            }
+        }
+    }
+}
+
+$result | ConvertTo-Json -Compress
+`;
+
+    const encoded = Buffer.from(psScript, "utf16le").toString("base64");
+    exec(`powershell -NoProfile -EncodedCommand ${encoded}`, { maxBuffer: 15 * 1024 * 1024 }, (err, stdout) => {
       if (err || !stdout.trim()) {
         return resolve([]);
       }
       try {
         const parsed = JSON.parse(stdout.trim());
         const apps: DiscoveredApp[] = [];
-        if (Array.isArray(parsed)) {
-          for (const item of parsed) {
-            if (item.Name && item.AppID) {
-              apps.push({ name: item.Name, appId: item.AppID });
-            }
+        const rawList = Array.isArray(parsed) ? parsed : [parsed];
+        for (const item of rawList) {
+          if (item && item.name) {
+            apps.push({
+              name: item.name,
+              appId: item.appId || undefined,
+              targetPath: item.targetPath || undefined,
+            });
           }
-        } else if (parsed.Name && parsed.AppID) {
-          apps.push({ name: parsed.Name, appId: parsed.AppID });
         }
 
         // Cache to data/app-catalog.json
@@ -103,19 +156,24 @@ export async function findAppInCatalog(query: string): Promise<DiscoveredApp | n
   const clean = query.toLowerCase().trim();
 
   // 1. Exact match
-  const exact = apps.find((a) => a.name.toLowerCase() === clean);
+  let exact = apps.find((a) => a.name.toLowerCase() === clean);
   if (exact) return exact;
 
   // 2. Starts with
-  const startsWith = apps.find((a) => a.name.toLowerCase().startsWith(clean));
+  let startsWith = apps.find((a) => a.name.toLowerCase().startsWith(clean));
   if (startsWith) return startsWith;
 
-  // 3. Includes
-  const includes = apps.find((a) => a.name.toLowerCase().includes(clean));
+  // 3. Word boundary or sub-match
+  let includes = apps.find((a) => a.name.toLowerCase().includes(clean));
   if (includes) return includes;
+
+  // 4. Reverse inclusion (app name contained within query)
+  let reverseMatch = apps.find((a) => clean.includes(a.name.toLowerCase()) && a.name.length > 2);
+  if (reverseMatch) return reverseMatch;
 
   return null;
 }
+
 
 /**
  * Lists all running applications with visible windows on the system

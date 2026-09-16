@@ -7,7 +7,7 @@ import { buildMemoryContext, recordTurn } from "@/lib/memory/store";
 
 const SYSTEM_INSTRUCTION = `You are ULTRON, a highly sophisticated, intelligent, and natural conversational AI desktop companion with deep system integration on Windows.
 You sound and behave like a real, capable human assistant: articulate, friendly, concise, proactive, and decisive.
-You have real-time access to the user's computer: files, running applications, Start Menu apps, WhatsApp contacts, the web browser, camera vision, and a screenshot of their screen.
+You have real-time access to the user's computer: files, running applications, downloaded/installed apps, WhatsApp contacts, the web browser, camera vision, a screenshot of their screen, and the ability to type text and press keys in any active application window (Notepad, Word, browser, editor, etc.).
 You also have a persistent long-term memory across sessions (see MEMORY CONTEXT below when present).
 
 Rules:
@@ -125,7 +125,7 @@ async function executeLocalIntentEngine(
   }
 
   // 2. What's Running / List Running Apps
-  if (text.includes("what is running") || text.includes("whats running") || text.includes("list apps") || text.includes("running apps") || text.includes("open windows")) {
+  if (text.includes("what is running") || text.includes("whats running") || text.includes("running apps") || text.includes("open windows")) {
     const toolRes = await executeTool("list_running_apps", {});
     executedActions.push({ tool: "list_running_apps", args: {}, result: toolRes.output });
     return {
@@ -133,6 +133,31 @@ async function executeLocalIntentEngine(
       spokenResponse: "Here are your currently open applications and windows.",
       toolsExecuted: executedActions,
       uiActions,
+    };
+  }
+
+  // 2b. Installed Apps
+  if (text.includes("installed apps") || text.includes("all apps") || text.includes("list apps") || text.includes("what apps")) {
+    const toolRes = await executeTool("get_installed_apps", {});
+    executedActions.push({ tool: "get_installed_apps", args: {}, result: toolRes.output });
+    return {
+      response: toolRes.output,
+      spokenResponse: "Here are the installed applications found on your system.",
+      toolsExecuted: executedActions,
+      uiActions,
+    };
+  }
+
+  // 2c. Switch / Focus App
+  if (text.startsWith("switch to ") || text.startsWith("focus ") || text.startsWith("bring ") && text.includes("to front")) {
+    const target = text.replace(/^(switch to|focus|bring)\s+(?:the\s+)?(?:application\s+|app\s+)?/i, "").replace(/\s+to front/i, "").trim();
+    const toolRes = await executeTool("switch_to_app", { target });
+    executedActions.push({ tool: "switch_to_app", args: { target }, result: toolRes.output });
+    return {
+      response: toolRes.output,
+      spokenResponse: toolRes.success ? `Switched to ${target}.` : `Could not focus ${target}.`,
+      toolsExecuted: executedActions,
+      uiActions: [{ action: "set_emotion", emotion: toolRes.success ? "success" : "error" }],
     };
   }
 
@@ -162,6 +187,73 @@ async function executeLocalIntentEngine(
     return {
       response: toolRes.output,
       spokenResponse: toolRes.success ? toolRes.output.split("\n")[0] : `I couldn't research ${query}.`,
+      toolsExecuted: executedActions,
+      uiActions: [{ action: "set_emotion", emotion: toolRes.success ? "success" : "error" }],
+    };
+  }
+
+  // 3c. Create / Write File Intent
+  const createFileMatch =
+    text.match(/^(?:create|make|write|generate)\s+(?:a\s+)?(?:new\s+)?file\s+(?:called\s+|named\s+)?["']?([^"'\s]+)["']?(?:\s+(?:with\s+(?:the\s+)?content|containing|with)\s+["']?(.*?)["']?)?$/i) ||
+    text.match(/^(?:write|save)\s+["']?(.*?)["']?\s+(?:to|into|in)\s+(?:file\s+)?["']?([^"'\s]+)["']?$/i);
+
+  if (createFileMatch) {
+    let filePath = "";
+    let content = "";
+    if (text.startsWith("write ") && text.includes(" to ")) {
+      content = createFileMatch[1]?.trim() || "";
+      filePath = createFileMatch[2]?.trim() || "untitled.txt";
+    } else {
+      filePath = createFileMatch[1]?.trim() || "untitled.txt";
+      content = createFileMatch[2]?.trim() || "";
+    }
+    const toolRes = await executeTool("create_file", { path: filePath, content });
+    executedActions.push({ tool: "create_file", args: { path: filePath, content }, result: toolRes.output });
+    return {
+      response: toolRes.output,
+      spokenResponse: toolRes.success ? `Created file ${filePath} for you.` : `Failed to create file: ${toolRes.output}`,
+      toolsExecuted: executedActions,
+      uiActions: [{ action: "set_emotion", emotion: toolRes.success ? "success" : "error" }],
+    };
+  }
+
+  // 3d. Create Folder Intent
+  const createFolderMatch = text.match(/^(?:create|make|new)\s+(?:a\s+)?(?:new\s+)?(?:folder|directory)\s+(?:called\s+|named\s+)?["']?([^"']+)["']?$/i);
+  if (createFolderMatch && createFolderMatch[1]) {
+    const folderPath = createFolderMatch[1].trim();
+    const toolRes = await executeTool("create_folder", { path: folderPath });
+    executedActions.push({ tool: "create_folder", args: { path: folderPath }, result: toolRes.output });
+    return {
+      response: toolRes.output,
+      spokenResponse: toolRes.success ? `Created folder ${folderPath}.` : `Failed to create folder.`,
+      toolsExecuted: executedActions,
+      uiActions: [{ action: "set_emotion", emotion: toolRes.success ? "success" : "error" }],
+    };
+  }
+
+  // 3e. Read File Intent
+  const readFileMatch = text.match(/^(?:read|show|view|open and read|what(?:'s| is) in)\s+(?:the\s+)?(?:file\s+|document\s+)?["']?([^"']+)["']?$/i);
+  if (readFileMatch && readFileMatch[1] && !readFileMatch[1].startsWith("my screen")) {
+    const filePath = readFileMatch[1].trim();
+    const toolRes = await executeTool("read_file", { path: filePath });
+    executedActions.push({ tool: "read_file", args: { path: filePath }, result: toolRes.output });
+    return {
+      response: toolRes.output,
+      spokenResponse: toolRes.success ? `Here are the contents of ${filePath}.` : `Could not read ${filePath}.`,
+      toolsExecuted: executedActions,
+      uiActions: [{ action: "set_emotion", emotion: toolRes.success ? "success" : "error" }],
+    };
+  }
+
+  // 3f. Open Specific File Intent
+  const openFileMatch = text.match(/^open\s+(?:the\s+)?(?:file|doc|document|pdf|image)\s+["']?([^"']+)["']?$/i);
+  if (openFileMatch && openFileMatch[1]) {
+    const fileQuery = openFileMatch[1].trim();
+    const toolRes = await executeTool("open_file", { query: fileQuery });
+    executedActions.push({ tool: "open_file", args: { query: fileQuery }, result: toolRes.output });
+    return {
+      response: toolRes.output,
+      spokenResponse: toolRes.success ? `Opening ${fileQuery}.` : `Could not find or open ${fileQuery}.`,
       toolsExecuted: executedActions,
       uiActions: [{ action: "set_emotion", emotion: toolRes.success ? "success" : "error" }],
     };
@@ -203,6 +295,36 @@ async function executeLocalIntentEngine(
         uiActions: [{ action: "set_emotion", emotion: "success" }],
       };
     }
+  }
+
+  // 4b. Type Text & Press Key Intent
+  const typeMatch =
+    text.match(/^(?:type|write|enter text)\s+(?:["']?)(.+?)(?:["']?)(?:\s+(?:in|into|on)\s+(.+))?$/i);
+  if (typeMatch && typeMatch[1]) {
+    const typeText = typeMatch[1].trim();
+    const targetApp = typeMatch[2] ? typeMatch[2].trim() : undefined;
+    const toolRes = await executeTool("type_text", { text: typeText, target_app: targetApp });
+    executedActions.push({ tool: "type_text", args: { text: typeText, target_app: targetApp }, result: toolRes.output });
+    return {
+      response: toolRes.output,
+      spokenResponse: toolRes.success ? `Typed for you.` : `Could not type text.`,
+      toolsExecuted: executedActions,
+      uiActions: [{ action: "set_emotion", emotion: toolRes.success ? "success" : "error" }],
+    };
+  }
+
+  const pressMatch = text.match(/^(?:press|hit|send key)\s+(.+?)(?:\s+(?:in|into|on)\s+(.+))?$/i);
+  if (pressMatch && pressMatch[1]) {
+    const key = pressMatch[1].trim();
+    const targetApp = pressMatch[2] ? pressMatch[2].trim() : undefined;
+    const toolRes = await executeTool("press_key", { key, target_app: targetApp });
+    executedActions.push({ tool: "press_key", args: { key, target_app: targetApp }, result: toolRes.output });
+    return {
+      response: toolRes.output,
+      spokenResponse: toolRes.success ? `Pressed ${key}.` : `Could not press ${key}.`,
+      toolsExecuted: executedActions,
+      uiActions: [{ action: "set_emotion", emotion: toolRes.success ? "success" : "error" }],
+    };
   }
 
   // 5. Open Application / Files Intent

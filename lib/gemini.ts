@@ -7,7 +7,13 @@
 // be fixed by switching model names), and cache whichever model actually
 // worked for the life of this server process so we're not re-probing on
 // every request.
-export const MODEL_CANDIDATES = ["gemini-3.6-flash", "gemini-flash-latest", "gemini-flash-lite-latest"];
+export const MODEL_CANDIDATES = [
+  "gemini-3.5-flash-lite",
+  "gemini-3.5-flash",
+  "gemini-flash-lite-latest",
+  "gemini-flash-latest",
+  "gemini-3.6-flash",
+];
 let workingModel: string | null = null;
 
 export function modelUrl(model: string, apiKey: string): string {
@@ -49,30 +55,41 @@ export class GeminiApiError extends Error {
  */
 export async function callGemini(apiKey: string, body: Record<string, any>): Promise<any> {
   const requestBody = JSON.stringify(body);
-  const candidates = workingModel ? [workingModel] : MODEL_CANDIDATES;
+  const candidates = workingModel
+    ? [workingModel, ...MODEL_CANDIDATES.filter((m) => m !== workingModel)]
+    : MODEL_CANDIDATES;
 
   let res: Response | null = null;
   let lastErrorText = "";
   let lastStatus = 0;
 
   for (const model of candidates) {
-    const url = modelUrl(model, apiKey);
-    res = await fetchWithTimeout(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: requestBody,
-    });
+    try {
+      const url = modelUrl(model, apiKey);
+      res = await fetchWithTimeout(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: requestBody,
+      });
 
-    if (res.ok) {
-      workingModel = model;
-      return res.json();
+      if (res.ok) {
+        workingModel = model;
+        return await res.json();
+      }
+
+      lastErrorText = await res.text();
+      lastStatus = res.status;
+
+      // If this model is rate limited (429), not found (404), or temporarily overloaded (503), try the next candidate
+      console.warn(`Gemini model "${model}" returned status ${res.status}, checking next candidate...`);
+      if (workingModel === model) {
+        workingModel = null;
+      }
+    } catch (err: any) {
+      console.warn(`Gemini model "${model}" fetch error: ${err?.message}, checking next candidate...`);
     }
-
-    lastErrorText = await res.text();
-    lastStatus = res.status;
-    if (res.status !== 404) break; // only model-not-found is worth trying another candidate for
-    console.warn(`Gemini model "${model}" unavailable (404), trying next candidate...`);
   }
 
   throw new GeminiApiError(lastStatus, lastErrorText);
 }
+

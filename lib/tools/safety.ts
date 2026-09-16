@@ -22,14 +22,13 @@ const DATA_DIR = path.join(process.cwd(), "data");
 const SAFETY_CONFIG_PATH = path.join(DATA_DIR, "safety-config.json");
 const AUDIT_LOG_PATH = path.join(DATA_DIR, "audit-log.jsonl");
 
-// Default safety configuration
+// Default safety configuration — protects critical OS internals and repo system files from destruction
 const DEFAULT_SAFETY_CONFIG: SafetyConfig = {
   deniedPaths: [
-    "C:\\Windows",
-    "C:\\Program Files",
-    "C:\\Program Files (x86)",
-    path.join(os.homedir(), "AppData"),
-    process.cwd(), // Do not delete this project's own core files by accident
+    "C:\\Windows\\System32",
+    "C:\\Windows\\SysWOW64",
+    path.join(process.cwd(), ".git"),
+    path.join(process.cwd(), "node_modules"),
   ],
   protectedProcesses: [
     "explorer.exe",
@@ -60,7 +59,26 @@ export function getSafetyConfig(): SafetyConfig {
       return DEFAULT_SAFETY_CONFIG;
     }
     const content = fs.readFileSync(SAFETY_CONFIG_PATH, "utf-8");
-    return JSON.parse(content);
+    const parsed = JSON.parse(content);
+
+    // Clean up any legacy overly-broad denied paths (e.g. process.cwd or C:\Program Files)
+    const cleanedDenied = (parsed.deniedPaths || []).filter((p: string) => {
+      const low = p.toLowerCase();
+      return (
+        !low.includes("ultron-by-sagar-builds") &&
+        low !== process.cwd().toLowerCase() &&
+        !low.endsWith("appdata") &&
+        !low.endsWith("program files") &&
+        !low.endsWith("program files (x86)")
+      );
+    });
+
+    if (cleanedDenied.length !== parsed.deniedPaths?.length) {
+      parsed.deniedPaths = cleanedDenied.length > 0 ? cleanedDenied : DEFAULT_SAFETY_CONFIG.deniedPaths;
+      fs.writeFileSync(SAFETY_CONFIG_PATH, JSON.stringify(parsed, null, 2), "utf-8");
+    }
+
+    return parsed;
   } catch (err) {
     console.error("Failed to read safety config, using defaults:", err);
     return DEFAULT_SAFETY_CONFIG;

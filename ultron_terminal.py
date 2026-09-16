@@ -12,13 +12,8 @@ import time
 import subprocess
 import threading
 import urllib.parse
-import urllib.request
-import urllib.error
 from pathlib import Path
 import psutil
-
-ULTRON_API_URL = "http://localhost:3000/api/chat"
-_api_reachable = None  # cached after first successful/failed call
 
 # Speech and Audio dependencies
 try:
@@ -95,11 +90,16 @@ APP_LAUNCH_MAP = {
     "word": "winword",
     "excel": "excel",
     "powerpoint": "powerpnt",
-    "whatsapp": "https://web.whatsapp.com",
     "youtube": "https://www.youtube.com",
     "gmail": "https://mail.google.com",
     "github": "https://github.com",
     "chatgpt": "https://chatgpt.com",
+    "instagram": "https://www.instagram.com",
+    "twitter": "https://www.twitter.com",
+    "facebook": "https://www.facebook.com",
+    "linkedin": "https://www.linkedin.com",
+    "telegram": "https://web.telegram.org",
+    "whatsapp": "https://web.whatsapp.com",
 }
 
 
@@ -117,12 +117,8 @@ def speak_text(text: str):
         try:
             tts_engine.say(clean)
             tts_engine.runAndWait()
-            # pyttsx3's Windows (SAPI5) driver can silently stop responding on
-            # later calls if the run loop isn't explicitly closed out — stop()
-            # after every utterance keeps the engine usable turn after turn.
-            tts_engine.stop()
-        except Exception as e:
-            print(f"[TTS error: {e}]")
+        except Exception:
+            pass
 
 
 def get_contacts() -> list:
@@ -284,62 +280,7 @@ def get_system_telemetry() -> str:
     )
 
 
-def call_ultron_brain(message: str, history: list = None) -> dict | None:
-    """
-    Routes the message through the same Gemini-powered /api/chat brain the
-    web UI uses (function-calling over the full tool set: open/close apps,
-    delete files, WhatsApp, web search, etc.) instead of this file's much
-    narrower local regex matching. Requires `npm run dev` running in the
-    project directory. Returns None if the API is unreachable so callers
-    can fall back to the local engine.
-    """
-    global _api_reachable
-    payload = json.dumps({
-        "message": message,
-        "history": history or [],
-    }).encode("utf-8")
-
-    req = urllib.request.Request(
-        ULTRON_API_URL,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            _api_reachable = True
-            return data
-    except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-        if _api_reachable is not False:
-            # Only warn once per session — avoids spamming every turn while offline.
-            if console:
-                console.print(f"[dim]AI brain unreachable ({e}); using offline commands. Run 'npm run dev' for full Gemini responses.[/dim]")
-            else:
-                print(f"[AI brain unreachable ({e}); using offline commands. Run 'npm run dev' for full Gemini responses.]")
-        _api_reachable = False
-        return None
-    except Exception as e:
-        if console:
-            console.print(f"[dim]AI brain error: {e}[/dim]")
-        return None
-
-
-def get_ultron_reply(text: str, history: list = None) -> str:
-    """Try the full Gemini brain first; fall back to local regex commands offline."""
-    data = call_ultron_brain(text, history)
-    if data:
-        # Tool results (file listings, running-app lists, etc.) live in `response`;
-        # `spokenResponse` is the short natural-language line meant for TTS.
-        full = data.get("response") or data.get("spokenResponse") or "Done."
-        spoken = data.get("spokenResponse") or full
-        if full != spoken:
-            print(f"\n{full}")
-        return spoken
-    return process_command_local(text)
-
-
-def process_command_local(cmd: str) -> str:
+def process_command(cmd: str) -> str:
     text = cmd.lower().strip()
 
     # Greetings & banter
@@ -455,11 +396,7 @@ def main():
     else:
         print("=== U.L.T.R.O.N. TERMINAL CORE ONLINE ===")
 
-    call_ultron_brain("hello")  # warm probe — populates _api_reachable and prints the notice once, up front
-    if _api_reachable:
-        speak_text("Ultron intelligence core online, full Gemini brain connected. How may I assist you?")
-    else:
-        speak_text("Ultron intelligence core online in offline mode. How may I assist you?")
+    speak_text("Ultron intelligence core online. How may I assist you?")
 
     recognizer = sr.Recognizer() if HAS_SR else None
     mic = None
@@ -470,18 +407,6 @@ def main():
                 recognizer.adjust_for_ambient_noise(source, duration=0.8)
         except Exception:
             mic = None
-
-    history: list = []
-
-    def remember(user_text: str, reply_text: str):
-        history.append({"role": "user", "text": user_text})
-        history.append({"role": "model", "text": reply_text})
-        del history[:-12]  # keep the last few turns only
-
-    def handle_turn(user_text: str):
-        reply = get_ultron_reply(user_text, history)
-        speak_text(reply)
-        remember(user_text, reply)
 
     while True:
         try:
@@ -495,7 +420,7 @@ def main():
                 speak_text("Shutting down Ultron terminal core. Goodbye.")
                 break
 
-            if user_input.lower() in ("v", "voice"):
+            if user_input.lower() in ("v", "voice", "listen"):
                 if not HAS_SR or not mic:
                     print("SpeechRecognition / PyAudio is not available. Please type your directive.")
                     continue
@@ -505,41 +430,16 @@ def main():
                         console.print(f"[bold green]User (Voice):[/bold green] {heard}")
                     else:
                         print(f"User: {heard}")
-                    handle_turn(heard)
+                    reply = process_command(heard)
+                    speak_text(reply)
                 else:
                     if console:
                         console.print("[yellow]No speech detected. Ready for your next command.[/yellow]")
                 continue
 
-            if user_input.lower() == "listen":
-                if not HAS_SR or not mic:
-                    print("SpeechRecognition / PyAudio is not available. Please type your directive.")
-                    continue
-                if console:
-                    console.print("[bold yellow]Continuous conversation mode — speak naturally. Say 'stop listening' or press Ctrl+C to exit.[/bold yellow]")
-                else:
-                    print("Continuous conversation mode — say 'stop listening' or press Ctrl+C to exit.")
-                speak_text("I'm listening continuously now. Go ahead.")
-                while True:
-                    try:
-                        heard = listen_microphone(recognizer, mic)
-                        if not heard:
-                            continue
-                        if console:
-                            console.print(f"[bold green]User (Voice):[/bold green] {heard}")
-                        else:
-                            print(f"User: {heard}")
-                        if heard.lower() in ("stop listening", "exit voice", "cancel", "stop"):
-                            speak_text("Exiting continuous listening.")
-                            break
-                        handle_turn(heard)
-                    except KeyboardInterrupt:
-                        print("\nExited continuous listening mode.")
-                        break
-                continue
-
             # Process typed command
-            handle_turn(user_input)
+            reply = process_command(user_input)
+            speak_text(reply)
 
         except KeyboardInterrupt:
             speak_text("System interrupted. Goodbye.")

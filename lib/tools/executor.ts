@@ -59,8 +59,10 @@ const COMMON_APP_MAP: Record<string, string> = {
   vscode: "code",
   "vs code": "code",
   "visual studio code": "code",
+  cursor: "cursor",
   spotify: "spotify:",
   discord: "discord:",
+  telegram: "shell:AppsFolder\\Telegram.TelegramDesktop",
   camera: "microsoft.windows.camera:",
   webcam: "microsoft.windows.camera:",
   settings: "ms-settings:",
@@ -89,13 +91,195 @@ const COMMON_APP_MAP: Record<string, string> = {
   chatgpt: "https://chatgpt.com",
 };
 
-function launchTarget(target: string): Promise<boolean> {
+/**
+ * Resolves a file/directory path intelligently across Windows Desktop, Documents, Downloads, and Workspace
+ */
+export function resolveTargetFilePath(inputPath: string, forCreate = false): string {
+  const trimmed = inputPath.trim().replace(/^["']|["']$/g, "");
+  if (!trimmed) return path.join(os.homedir(), "Desktop");
+
+  // If already an absolute path (e.g. C:\... or \\...)
+  if (path.isAbsolute(trimmed) || /^[a-zA-Z]:[/\\]/.test(trimmed)) {
+    return path.resolve(trimmed);
+  }
+
+  // If path explicitly starts with ./ or ../, respect cwd relative
+  if (trimmed.startsWith("./") || trimmed.startsWith(".\\") || trimmed.startsWith("../") || trimmed.startsWith("..\\")) {
+    return path.resolve(trimmed);
+  }
+
+  const desktopDir = path.join(os.homedir(), "Desktop");
+  const documentsDir = path.join(os.homedir(), "Documents");
+  const downloadsDir = path.join(os.homedir(), "Downloads");
+
+  if (forCreate) {
+    // When creating without folder specifier, default to user's Desktop for high visibility
+    if (!trimmed.includes("/") && !trimmed.includes("\\")) {
+      return path.join(desktopDir, trimmed);
+    }
+    return path.resolve(desktopDir, trimmed);
+  }
+
+  // Check in user common folders
+  const candidates = [
+    path.join(desktopDir, trimmed),
+    path.join(documentsDir, trimmed),
+    path.join(downloadsDir, trimmed),
+    path.resolve(trimmed),
+  ];
+
+  for (const cand of candidates) {
+    if (fs.existsSync(cand)) {
+      return cand;
+    }
+  }
+
+  return path.join(desktopDir, trimmed);
+}
+
+function escapeSendKeysText(str: string): string {
+  return str.replace(/([+^%~(){}[\]])/g, "{$1}");
+}
+
+function parseSpecialKey(keyStr: string): string {
+  const k = keyStr.toLowerCase().trim();
+  const map: Record<string, string> = {
+    enter: "{ENTER}",
+    return: "{ENTER}",
+    tab: "{TAB}",
+    esc: "{ESC}",
+    escape: "{ESC}",
+    backspace: "{BACKSPACE}",
+    bksp: "{BACKSPACE}",
+    delete: "{DELETE}",
+    del: "{DELETE}",
+    space: " ",
+    spacebar: " ",
+    up: "{UP}",
+    down: "{DOWN}",
+    left: "{LEFT}",
+    right: "{RIGHT}",
+    home: "{HOME}",
+    end: "{END}",
+    pageup: "{PGUP}",
+    pgup: "{PGUP}",
+    pagedown: "{PGDN}",
+    pgdn: "{PGDN}",
+    f1: "{F1}",
+    f2: "{F2}",
+    f3: "{F3}",
+    f4: "{F4}",
+    f5: "{F5}",
+    f6: "{F6}",
+    f7: "{F7}",
+    f8: "{F8}",
+    f9: "{F9}",
+    f10: "{F10}",
+    f11: "{F11}",
+    f12: "{F12}",
+    "ctrl+c": "^c",
+    "ctrl+v": "^v",
+    "ctrl+a": "^a",
+    "ctrl+s": "^s",
+    "ctrl+z": "^z",
+    "ctrl+y": "^y",
+    "ctrl+x": "^x",
+    "ctrl+f": "^f",
+    "ctrl+w": "^w",
+    "ctrl+t": "^t",
+    "ctrl+n": "^n",
+    "ctrl+shift+n": "^+n",
+    "alt+f4": "%{F4}",
+    "alt+tab": "%{TAB}",
+  };
+
+  if (map[k]) return map[k];
+  if (k.startsWith("ctrl+") && k.length === 6) return `^${k[5]}`;
+  if (k.startsWith("alt+") && k.length === 5) return `%${k[4]}`;
+  if (k.startsWith("shift+") && k.length === 7) return `+${k[6]}`;
+
+  return escapeSendKeysText(keyStr);
+}
+
+export function sendKeystrokes(keys: string): Promise<{ success: boolean; message: string }> {
   return new Promise((resolve) => {
+    if (process.platform !== "win32") {
+      return resolve({ success: false, message: "Keystroke simulation is Windows-only." });
+    }
+
+    const escaped = keys.replace(/'/g, "''");
+    const psScript = `
+Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.SendKeys]::SendWait('${escaped}')
+`;
+    const encoded = Buffer.from(psScript, "utf16le").toString("base64");
+    exec(`powershell -NoProfile -EncodedCommand ${encoded}`, (err) => {
+      if (err) {
+        const wscript = `
+$w = New-Object -ComObject WScript.Shell
+$w.SendKeys('${escaped}')
+`;
+        const encW = Buffer.from(wscript, "utf16le").toString("base64");
+        exec(`powershell -NoProfile -EncodedCommand ${encW}`, (err2) => {
+          if (err2) resolve({ success: false, message: `Keystroke execution failed: ${err2.message}` });
+          else resolve({ success: true, message: "Typed successfully." });
+        });
+      } else {
+        resolve({ success: true, message: "Typed successfully." });
+      }
+    });
+  });
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+export function launchTarget(target: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (!target) return resolve(false);
+
     if (process.platform === "win32") {
-      const psCommand = `powershell -NoProfile -Command "Start-Process '${target.replace(/'/g, "''")}'"`;
+      // 1. Web URLs
+      if (/^https?:\/\//i.test(target)) {
+        const escaped = target.replace(/'/g, "''");
+        exec(`powershell -NoProfile -Command "Start-Process '${escaped}'"`, (err) => {
+          if (!err) return resolve(true);
+          exec(`explorer.exe "${target}"`, (err2) => resolve(!err2));
+        });
+        return;
+      }
+
+      // 2. shell: or URI protocols
+      if (/^shell:/i.test(target) || /^[a-zA-Z0-9.\-_]+:$/i.test(target) || /^[a-zA-Z0-9.\-_]+:\/\//i.test(target)) {
+        exec(`explorer.exe "${target}"`, (err) => {
+          if (!err) return resolve(true);
+          const escaped = target.replace(/'/g, "''");
+          exec(`powershell -NoProfile -Command "Start-Process '${escaped}'"`, (err2) => resolve(!err2));
+        });
+        return;
+      }
+
+      // 3. Existing file or directory path
+      if (fs.existsSync(target)) {
+        const full = path.resolve(target);
+        exec(`explorer.exe "${full}"`, (err) => {
+          if (!err) return resolve(true);
+          const escaped = full.replace(/'/g, "''");
+          exec(`powershell -NoProfile -Command "Start-Process -FilePath '${escaped}'"`, (err2) => resolve(!err2));
+        });
+        return;
+      }
+
+      // 4. App executables or commands
+      const escaped = target.replace(/'/g, "''");
+      const psCommand = `powershell -NoProfile -Command "try { Start-Process '${escaped}' -ErrorAction Stop } catch { Start-Process 'cmd.exe' @('/c', 'start', '\"\"', '${escaped}') -ErrorAction Stop }"`;
       exec(psCommand, (err) => {
         if (!err) return resolve(true);
-        exec(`start ${target}`, (err2) => resolve(!err2));
+        exec(`cmd.exe /c start "" "${target}"`, (err2) => {
+          if (!err2) return resolve(true);
+          exec(`explorer.exe "${target}"`, (err3) => resolve(!err3));
+        });
       });
     } else if (process.platform === "darwin") {
       exec(`open "${target}"`, (err) => resolve(!err));
@@ -148,9 +332,21 @@ export async function executeTool(
       // 2. Open App or File
       case "open_app_or_file": {
         const target = String(args.target || "").trim();
-        const clean = target.toLowerCase().replace(/^(open|launch|start)\s+/i, "");
+        const clean = target.toLowerCase().replace(/^(open|launch|start)\s+/i, "").trim();
 
-        // A. Check common map
+        // A. Check direct existing file/folder
+        const resolvedPath = resolveTargetFilePath(clean, false);
+        if (fs.existsSync(resolvedPath)) {
+          const ok = await launchTarget(resolvedPath);
+          recordSessionOpened(resolvedPath, "file");
+          result = {
+            success: ok,
+            output: ok ? `Opened: "${path.basename(resolvedPath)}"` : `Failed to open "${resolvedPath}"`,
+          };
+          break;
+        }
+
+        // B. Check common map
         if (COMMON_APP_MAP[clean]) {
           const mapped = COMMON_APP_MAP[clean];
           const ok = await launchTarget(mapped);
@@ -162,38 +358,58 @@ export async function executeTool(
           break;
         }
 
-        // B. Check dynamic installed apps catalog (Phase 2)
+        // C. Check dynamic installed & downloaded apps catalog
         const discovered = await findAppInCatalog(clean);
-        if (discovered && discovered.appId) {
-          const ok = await launchTarget(`shell:AppsFolder\\${discovered.appId}`);
-          recordSessionOpened(discovered.name, "app");
+        if (discovered) {
+          if (discovered.targetPath && fs.existsSync(discovered.targetPath)) {
+            const ok = await launchTarget(discovered.targetPath);
+            recordSessionOpened(discovered.name, "app");
+            result = {
+              success: ok,
+              output: ok ? `Successfully launched ${discovered.name}` : `Failed to launch ${discovered.name}`,
+            };
+            break;
+          }
+          if (discovered.appId) {
+            let launchCmd = discovered.appId;
+            if (discovered.appId.startsWith("steam://") || discovered.appId.startsWith("http") || discovered.appId.includes(":\\")) {
+              launchCmd = discovered.appId;
+            } else {
+              launchCmd = `shell:AppsFolder\\${discovered.appId}`;
+            }
+            const ok = await launchTarget(launchCmd);
+            recordSessionOpened(discovered.name, "app");
+            result = {
+              success: ok,
+              output: ok ? `Successfully launched ${discovered.name}` : `Failed to launch ${discovered.name}`,
+            };
+            break;
+          }
+        }
+
+        // D. Try fuzzy matching file search across Desktop/Documents/Downloads
+        const searchMatches = await searchFilesInternal(clean, undefined, 1);
+        if (searchMatches.length > 0 && fs.existsSync(searchMatches[0])) {
+          const fileMatch = searchMatches[0];
+          const ok = await launchTarget(fileMatch);
+          recordSessionOpened(fileMatch, "file");
           result = {
             success: ok,
-            output: ok ? `Successfully launched ${discovered.name}` : `Failed to launch ${discovered.name}`,
+            output: ok ? `Opened file: "${path.basename(fileMatch)}"` : `Failed to open file "${fileMatch}"`,
           };
           break;
         }
 
-        // C. Check direct file/folder existence
-        if (fs.existsSync(target)) {
-          const ok = await launchTarget(path.resolve(target));
-          recordSessionOpened(target, "file");
-          result = {
-            success: ok,
-            output: ok ? `Opened file/folder: "${target}"` : `Failed to open "${target}"`,
-          };
-          break;
-        }
-
-        // D. Fallback start
-        const ok = await launchTarget(target);
-        recordSessionOpened(target, "app");
+        // E. Fallback direct start
+        const ok = await launchTarget(clean);
+        recordSessionOpened(clean, "app");
         result = {
           success: ok,
-          output: ok ? `Launched: "${target}"` : `Application '${target}' not found.`,
+          output: ok ? `Launched: "${target}"` : `Application or file '${target}' not found.`,
         };
         break;
       }
+
 
       // 3. Close App
       case "close_app": {
@@ -249,6 +465,16 @@ export async function executeTool(
       // 7. Open File (Fuzzy Finder)
       case "open_file": {
         const query = String(args.query || "").trim();
+        const direct = resolveTargetFilePath(query, false);
+        if (fs.existsSync(direct)) {
+          const ok = await launchTarget(direct);
+          recordSessionOpened(direct, "file");
+          result = {
+            success: ok,
+            output: ok ? `Opened: "${path.basename(direct)}"` : `Failed to open ${direct}`,
+          };
+          break;
+        }
         const searchRes = await searchFilesInternal(query, undefined, 5);
         if (searchRes.length > 0) {
           const best = searchRes[0];
@@ -270,7 +496,8 @@ export async function executeTool(
       // 8. Delete File (Soft Delete -> Recycle Bin)
       case "delete_file": {
         const targetPath = String(args.path || "").trim();
-        const delRes = await softDeleteFile(targetPath);
+        const resolvedPath = resolveTargetFilePath(targetPath, false);
+        const delRes = await softDeleteFile(resolvedPath);
         result = {
           success: delRes.success,
           output: delRes.message,
@@ -280,8 +507,8 @@ export async function executeTool(
 
       // 9. Move / Rename File
       case "move_file": {
-        const src = String(args.source || "").trim();
-        const dest = String(args.destination || "").trim();
+        const src = resolveTargetFilePath(String(args.source || "").trim(), false);
+        const dest = resolveTargetFilePath(String(args.destination || "").trim(), true);
 
         const checkSrc = isPathAllowed(src);
         const checkDest = isPathAllowed(dest);
@@ -300,7 +527,10 @@ export async function executeTool(
           break;
         }
 
-        fs.renameSync(path.resolve(src), path.resolve(dest));
+        const destDir = path.dirname(dest);
+        if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+
+        fs.renameSync(src, dest);
         result = {
           success: true,
           output: `Moved/Renamed '${path.basename(src)}' to '${dest}'.`,
@@ -312,18 +542,23 @@ export async function executeTool(
       case "create_file": {
         const targetPath = String(args.path || "").trim();
         const content = String(args.content || "");
-        const check = isPathAllowed(targetPath);
+        if (!targetPath) {
+          result = { success: false, output: "No file path specified." };
+          break;
+        }
+        const full = resolveTargetFilePath(targetPath, true);
+        const check = isPathAllowed(full);
         if (!check.allowed) {
           result = { success: false, output: check.reason || "Path denied." };
           break;
         }
-        const full = path.resolve(targetPath);
         const dir = path.dirname(full);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(full, content, "utf-8");
         result = {
           success: true,
           output: `Created file: "${full}"`,
+          data: { path: full },
         };
         break;
       }
@@ -331,16 +566,21 @@ export async function executeTool(
       // 11. Create Folder
       case "create_folder": {
         const targetPath = String(args.path || "").trim();
-        const check = isPathAllowed(targetPath);
+        if (!targetPath) {
+          result = { success: false, output: "No folder path specified." };
+          break;
+        }
+        const full = resolveTargetFilePath(targetPath, true);
+        const check = isPathAllowed(full);
         if (!check.allowed) {
           result = { success: false, output: check.reason || "Path denied." };
           break;
         }
-        const full = path.resolve(targetPath);
         fs.mkdirSync(full, { recursive: true });
         result = {
           success: true,
           output: `Created folder: "${full}"`,
+          data: { path: full },
         };
         break;
       }
@@ -395,14 +635,24 @@ export async function executeTool(
 
       // 14. Read File
       case "read_file": {
-        const filePath = path.resolve(String(args.path || ""));
-        const check = isPathAllowed(filePath);
-        if (!check.allowed && (filePath.toLowerCase().includes("windows") || filePath.toLowerCase().includes("appdata"))) {
-          result = { success: false, output: check.reason || "Reading restricted path." };
+        const rawPath = String(args.path || "").trim();
+        if (!rawPath) {
+          result = { success: false, output: "No file path specified." };
           break;
         }
+        let filePath = resolveTargetFilePath(rawPath, false);
         if (!fs.existsSync(filePath)) {
-          result = { success: false, output: `File not found: ${filePath}` };
+          const matches = await searchFilesInternal(rawPath, undefined, 1);
+          if (matches.length > 0 && fs.existsSync(matches[0])) {
+            filePath = matches[0];
+          } else {
+            result = { success: false, output: `File not found: ${rawPath}` };
+            break;
+          }
+        }
+        const check = isPathAllowed(filePath);
+        if (!check.allowed && filePath.toLowerCase().includes("windows\\system32")) {
+          result = { success: false, output: check.reason || "Reading restricted path." };
           break;
         }
         const stat = fs.statSync(filePath);
@@ -415,7 +665,8 @@ export async function executeTool(
         const lines = content.split("\n").slice(0, maxLines).join("\n");
         result = {
           success: true,
-          output: lines + (content.split("\n").length > maxLines ? `\n... (truncated at ${maxLines} lines)` : ""),
+          output: `[File: ${filePath}]\n${lines}${content.split("\n").length > maxLines ? `\n... (truncated at ${maxLines} lines)` : ""}`,
+          data: { path: filePath },
         };
         break;
       }
@@ -551,6 +802,66 @@ export async function executeTool(
         if (!command) { result = { success: false, output: "No command given." }; break; }
         const psRes = await runReadonlyPowershell(command);
         result = { success: psRes.success, output: psRes.output };
+        break;
+      }
+
+      // 24. Type Text
+      case "type_text": {
+        const text = String(args.text || "");
+        const targetApp = args.target_app ? String(args.target_app).trim() : undefined;
+        const pressEnter = Boolean(args.press_enter);
+
+        if (!text) {
+          result = { success: false, output: "No text specified to type." };
+          break;
+        }
+
+        if (targetApp) {
+          await switchToApp(targetApp);
+          await sleep(400);
+        }
+
+        let formatted = escapeSendKeysText(text);
+        if (pressEnter) {
+          formatted += "{ENTER}";
+        }
+
+        const typeRes = await sendKeystrokes(formatted);
+        result = {
+          success: typeRes.success,
+          output: typeRes.success
+            ? `Typed: "${text}"${targetApp ? ` into ${targetApp}` : ""}${pressEnter ? " [Enter]" : ""}`
+            : typeRes.message,
+        };
+        break;
+      }
+
+      // 25. Press Key
+      case "press_key": {
+        const key = String(args.key || "").trim();
+        const targetApp = args.target_app ? String(args.target_app).trim() : undefined;
+        const repeat = Math.min(20, Math.max(1, Number(args.repeat) || 1));
+
+        if (!key) {
+          result = { success: false, output: "No key specified to press." };
+          break;
+        }
+
+        if (targetApp) {
+          await switchToApp(targetApp);
+          await sleep(400);
+        }
+
+        const singleKey = parseSpecialKey(key);
+        const sequence = singleKey.repeat(repeat);
+
+        const keyRes = await sendKeystrokes(sequence);
+        result = {
+          success: keyRes.success,
+          output: keyRes.success
+            ? `Pressed: '${key}'${repeat > 1 ? ` (${repeat}x)` : ""}${targetApp ? ` in ${targetApp}` : ""}`
+            : keyRes.message,
+        };
         break;
       }
 
